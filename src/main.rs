@@ -57,7 +57,7 @@ struct BenchRes {
     performance: RequestLatency,
 
     // 压测时长
-    duration: i32,
+    duration: f32,
 
     // 混合读写等场景下的整体qps
     total_qps: f32,
@@ -67,7 +67,7 @@ impl BenchRes {
     fn new(client_num: i32, duration: i32) -> BenchRes {
         BenchRes {
             client_num,
-            duration,
+            duration: duration as f32,
             total_success: 0,
             total_failure: 0,
             total_qps: 0.0,
@@ -200,7 +200,7 @@ fn bench_create(params: &Cli) -> Option<BenchRes> {
     }
     // 所有请求处理完成的实际时长
     let actual_duration = time::Instant::now().duration_since(start_time);
-    total_res.duration = actual_duration.as_secs() as i32;
+    total_res.duration = actual_duration.as_secs_f32();
     total_res.total_qps = total_res.total_success as f32 / (actual_duration.as_millis() as f32 / 1000.0);
     total_res.performance.cal_qps(actual_duration.as_millis() as u64);
     Some(total_res)
@@ -307,7 +307,7 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
                     total_success: 0,
                     total_failure: 0,
                     performance: RequestLatency::new(),
-                    duration: param.duration as i32,
+                    duration: param.duration as f32,
                     total_qps: 0.0,
                 };
                 // 当前线程压测开始时间
