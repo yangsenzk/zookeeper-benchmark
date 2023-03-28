@@ -112,9 +112,9 @@ impl RequestLatency {
         self.update_quantile();
     }
 
-    pub fn cal_qps(&mut self, duration: u64) {
+    pub fn cal_qps(&mut self, duration_millis: u64) {
         for (_op, res) in self.op_latency.iter_mut() {
-            res.qps = res.request_cnt as f32 / duration as f32;
+            res.qps = res.request_cnt as f32 / (duration_millis as f32 / 1000.0);
         }
     }
 }
