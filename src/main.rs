@@ -114,6 +114,98 @@ fn post_clean(params: &Cli) {
     _ = zk.delete_recursive(BENCH_ROOT);
 }
 
+// 压测create操作
+fn bench_create(params: &Cli) -> Option<BenchRes> {
+    let zk = connect_zk(params.address.as_str());
+    // 先删除所有压测空间的znode
+    _ = zk.delete_recursive(BENCH_ROOT);
+    zk.create(BENCH_ROOT, vec![0; 10], Acl::open_unsafe().clone(), CreateMode::Persistent).unwrap();
+    let _ = zk.close();
+
+    let (tx, rx): (mpsc::Sender<BenchRes>, mpsc::Receiver<BenchRes>) = mpsc::channel();
+
+    let mut handles = vec![];
+
+    // 每个客户端至少创建的znode数量
+    let (minimal_node_num, remainder) = (params.node_num / params.client_num, params.node_num % params.client_num);
+
+    // 当前线程压测开始时间
+    let start_time = time::Instant::now();
+    println!("starting {} bench...", params.op);
+    for i in 0..params.client_num {
+        let thread_sender = tx.clone();
+        let param = params.clone();
+        let random_value: Vec<u8> = vec![0; param.data_size as usize];
+        let mut per_client_znode_num = minimal_node_num;
+        if i < remainder {
+            per_client_znode_num = minimal_node_num + 1;
+        }
+        let handle = thread::Builder::new()
+            .name(format!("thread-{:0>4}", i))
+            .spawn(move || {
+                let mut zk_cli = connect_zk(&param.address.as_str());
+
+                let cur_client_znode_root = format!("{}/{:0>4}", BENCH_ROOT, i);
+                zk_cli.create(&cur_client_znode_root, vec![0, 1], Acl::open_unsafe().clone(), CreateMode::Persistent).unwrap();
+
+                // 当前线程的压测结果
+                let mut res = BenchRes::new(param.client_num, param.duration as i32);
+
+                let mut znode_cnt = 0;
+                while znode_cnt < per_client_znode_num {
+                    let path = format!("{}/{:0>10}", cur_client_znode_root, znode_cnt);
+
+                    // 每条create请求的延迟
+                    let start = time::Instant::now();
+                    let result = zk_cli.create(&path, random_value.clone(), Acl::open_unsafe().clone(), CreateMode::Persistent);
+                    match result {
+                        Ok(_) => {
+                            res.total_success += 1;
+                            res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                            znode_cnt += 1;
+                        }
+                        Err(e) => {
+                            match e {
+                                ZkError::NodeExists => {
+                                    res.total_success += 1;
+                                    res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                                    znode_cnt += 1;
+                                }
+                                _ => {
+                                    println!("failed to create znode {}, error: {}. Reconnecting...", path, e);
+                                    res.total_failure += 1;
+                                    _ = zk_cli.close(); // 先close一下,不管result
+                                    zk_cli = connect_zk(param.address.as_str());
+                                }
+                            }
+                        }
+                    }
+                }
+                thread_sender.send(res).unwrap();
+                _ = zk_cli.close();
+            });
+        handles.push(handle.unwrap())
+    }
+    for handle in handles {
+        _ = handle.join();
+    }
+    drop(tx);
+
+    let mut total_res = BenchRes::new(params.client_num, params.duration as i32);
+    for thread_res in rx.iter() {
+        // println!("cnt from tx: {:?}", serde_json::to_string(&thread_res).unwrap());
+        total_res.total_success += thread_res.total_success;
+        total_res.total_failure += thread_res.total_failure;
+        total_res.performance.add(&thread_res.performance);
+    }
+    // 所有请求处理完成的实际时长
+    let actual_duration = time::Instant::now().duration_since(start_time);
+    total_res.duration = actual_duration.as_secs() as i32;
+    total_res.total_qps = total_res.total_success as f32 / (actual_duration.as_millis() as f32 / 1000.0);
+    total_res.performance.cal_qps(actual_duration.as_millis() as u64);
+    Some(total_res)
+}
+
 
 // 压测set操作
 fn bench_set(params: &Cli) -> Option<BenchRes> {
@@ -189,7 +281,7 @@ fn bench_set(params: &Cli) -> Option<BenchRes> {
         total_res.performance.add(&thread_res.performance);
     }
     total_res.total_qps = total_res.total_success as f32 / total_res.duration as f32;
-    total_res.performance.cal_qps(params.duration);
+    total_res.performance.cal_qps(params.duration * 1000);
     Some(total_res)
 }
 
@@ -273,7 +365,7 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
     }
 
     total_res.total_qps = total_res.total_success as f32 / params.duration as f32;
-    total_res.performance.cal_qps(params.duration);
+    total_res.performance.cal_qps(params.duration * 1000);
     Some(total_res)
 }
 
@@ -363,7 +455,7 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
     }
 
     total_res.total_qps = total_res.total_success as f32 / params.duration as f32;
-    total_res.performance.cal_qps(params.duration);
+    total_res.performance.cal_qps(params.duration * 1000);
     Some(total_res)
 }
 
@@ -404,6 +496,10 @@ fn main() {
         }
         "getset" => {
             let bench_res = bench_getset(&params);
+            println!("{}", serde_json::to_string(&bench_res).unwrap());
+        }
+        "create" => {
+            let bench_res = bench_create(&params);
             println!("{}", serde_json::to_string(&bench_res).unwrap());
         }
         _ => {
