@@ -9,9 +9,10 @@ pub struct RequestLatency {
 
 #[derive(Debug, Clone, Serialize)]
 struct OpResult {
-    op_cnt: u32,
+    request_cnt: u32,
+    #[serde(skip_serializing)]
     bucket: HashMap<u32, u32>,
-    // #[serde(skip_serializing)]
+    #[serde(skip_serializing)]
     detail_quantile: Vec<(u32, f32)>,
     short_quantile: HashMap<String, u32>,
     qps: f32,
@@ -20,7 +21,7 @@ struct OpResult {
 impl OpResult {
     pub fn new() -> OpResult {
         OpResult {
-            op_cnt: 0,
+            request_cnt: 0,
             bucket: HashMap::new(),
             detail_quantile: vec![],
             short_quantile: HashMap::new(),
@@ -51,7 +52,7 @@ impl RequestLatency {
                         op_result.bucket.insert(val, 1);
                     }
                 }
-                op_result.op_cnt += 1;
+                op_result.request_cnt += 1;
             }
             None => {
                 self.op_latency.insert(op.to_string(), OpResult::new());
@@ -69,7 +70,7 @@ impl RequestLatency {
                 let cnt = result.bucket.get(key).unwrap_or(&0u32);
                 cumulative_sum += cnt;
 
-                let percent = cumulative_sum as f32 / result.op_cnt as f32;
+                let percent = cumulative_sum as f32 / result.request_cnt as f32;
                 result.detail_quantile.push((*key, percent));
 
                 let k;
@@ -104,17 +105,16 @@ impl RequestLatency {
             for (t, another_cnt) in another_result.bucket.iter() {
                 let this_cnt = this_result.bucket.get(t).unwrap_or(&0u32);
                 this_result.bucket.insert(*t, *this_cnt + *another_cnt);
-                this_result.op_cnt += another_cnt;
+                this_result.request_cnt += another_cnt;
             }
         }
 
         self.update_quantile();
-        // self.cal_clear_res();
     }
 
     pub fn cal_qps(&mut self, duration: u64) {
         for (_op, res) in self.op_latency.iter_mut() {
-            res.qps = res.op_cnt as f32 / duration as f32;
+            res.qps = res.request_cnt as f32 / duration as f32;
         }
     }
 }

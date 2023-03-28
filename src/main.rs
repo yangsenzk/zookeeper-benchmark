@@ -44,11 +44,22 @@ struct Cli {
 
 #[derive(Debug, Clone, serde::Serialize)]
 struct BenchRes {
+    // 客户端数量
     client_num: i32,
+
+    // 成功的请求总数
     total_success: i32,
+
+    // 失败的请求总数
     total_failure: i32,
-    metrics: RequestLatency,
+
+    // 延迟/qps等指标
+    performance: RequestLatency,
+
+    // 压测时长
     duration: i32,
+
+    // 混合读写等场景下的整体qps
     total_qps: f32,
 }
 
@@ -60,7 +71,7 @@ impl BenchRes {
             total_success: 0,
             total_failure: 0,
             total_qps: 0.0,
-            metrics: RequestLatency::new(),
+            performance: RequestLatency::new(),
         }
     }
 }
@@ -87,7 +98,7 @@ fn pre_create(params: &Cli) {
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
         let _result = zk.create(
             path.as_str(),
-            vec![1; 1024],
+            vec![1; params.data_size as usize],
             Acl::open_unsafe().clone(),
             CreateMode::Persistent,
         ).unwrap();
@@ -143,7 +154,7 @@ fn bench_set(params: &Cli) -> Option<BenchRes> {
                     match result {
                         Ok(_) => {
                             res.total_success += 1;
-                            res.metrics.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                            res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
                         }
                         Err(e) => {
                             println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
@@ -171,14 +182,14 @@ fn bench_set(params: &Cli) -> Option<BenchRes> {
     drop(tx);
 
     let mut total_res = BenchRes::new(params.client_num, params.duration as i32);
-    for res in rx.iter() {
-        println!("cnt from tx: {:?}", serde_json::to_string(&res).unwrap());
-        total_res.total_success += res.total_success;
-        total_res.total_failure += res.total_failure;
-        total_res.metrics.add(&res.metrics);
+    for thread_res in rx.iter() {
+        // println!("cnt from tx: {:?}", serde_json::to_string(&thread_res).unwrap());
+        total_res.total_success += thread_res.total_success;
+        total_res.total_failure += thread_res.total_failure;
+        total_res.performance.add(&thread_res.performance);
     }
     total_res.total_qps = total_res.total_success as f32 / total_res.duration as f32;
-    total_res.metrics.cal_qps(params.duration);
+    total_res.performance.cal_qps(params.duration);
     Some(total_res)
 }
 
@@ -203,7 +214,7 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
                     client_num: 1,
                     total_success: 0,
                     total_failure: 0,
-                    metrics: RequestLatency::new(),
+                    performance: RequestLatency::new(),
                     duration: param.duration as i32,
                     total_qps: 0.0,
                 };
@@ -225,7 +236,7 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
                     match result {
                         Ok(_) => {
                             res.total_success += 1;
-                            res.metrics.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                            res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
                         }
                         Err(e) => {
                             println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
@@ -254,15 +265,15 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
 
     // 汇总结果
     let mut total_res = BenchRes::new(params.client_num, params.duration as i32);
-    for res in rx.iter() {
+    for thread_res in rx.iter() {
         // println!("cnt from tx: {:?}", serde_json::to_string(&res).unwrap());
-        total_res.total_success += res.total_success;
-        total_res.total_failure += res.total_failure;
-        total_res.metrics.add(&res.metrics);
+        total_res.total_success += thread_res.total_success;
+        total_res.total_failure += thread_res.total_failure;
+        total_res.performance.add(&thread_res.performance);
     }
 
     total_res.total_qps = total_res.total_success as f32 / params.duration as f32;
-    total_res.metrics.cal_qps(params.duration);
+    total_res.performance.cal_qps(params.duration);
     Some(total_res)
 }
 
@@ -304,7 +315,7 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
                         match get_result {
                             Ok(_) => {
                                 res.total_success += 1;
-                                res.metrics.insert("get".to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                                res.performance.insert("get".to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
                             }
                             Err(e) => {
                                 println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
@@ -322,7 +333,7 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
                         match set_result {
                             Ok(_) => {
                                 res.total_success += 1;
-                                res.metrics.insert("set".to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                                res.performance.insert("set".to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
                             }
                             Err(e) => {
                                 println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
@@ -344,15 +355,15 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
 
     // 汇总结果
     let mut total_res = BenchRes::new(params.client_num, params.duration as i32);
-    for res in rx.iter() {
+    for thread_res in rx.iter() {
         // println!("cnt from tx: {:?}", serde_json::to_string(&res).unwrap());
-        total_res.total_success += res.total_success;
-        total_res.total_failure += res.total_failure;
-        total_res.metrics.add(&res.metrics);
+        total_res.total_success += thread_res.total_success;
+        total_res.total_failure += thread_res.total_failure;
+        total_res.performance.add(&thread_res.performance);
     }
 
     total_res.total_qps = total_res.total_success as f32 / params.duration as f32;
-    total_res.metrics.cal_qps(params.duration);
+    total_res.performance.cal_qps(params.duration);
     Some(total_res)
 }
 
