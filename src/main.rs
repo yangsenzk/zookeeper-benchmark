@@ -170,9 +170,16 @@ fn post_clean(params: &Cli) {
             },
         }
     }
-    println!("finished deleting znode...");
+    println!("finished deleting znode and trying to delete {} recursively...", BENCH_ROOT);
     // 再递归删除节点
-    zk.delete_recursive(BENCH_ROOT).unwrap();
+    match zk.delete_recursive(BENCH_ROOT) {
+        Ok(_) => {
+            println!("delete {} recursively success...", BENCH_ROOT);
+        }
+        Err(e) => {
+            println!("delete {} recursively failed with error: {}", BENCH_ROOT, e);
+        }
+    }
     _ = zk.close();
 }
 
