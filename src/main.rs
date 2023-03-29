@@ -41,7 +41,6 @@ struct Cli {
     op: String,
 }
 
-
 #[derive(Debug, Clone, serde::Serialize)]
 struct BenchRes {
     // 客户端数量
@@ -76,16 +75,39 @@ impl BenchRes {
     }
 }
 
+/// divide node_num into client_num parts, returns the start and end.
+fn divide_batch(node_num: i32, client_num: i32) -> Vec<(i32, i32)> {
+    let (minimal_per_client, remainder) = (node_num / client_num, node_num % client_num);
+    let mut result = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    println!("{},{}", minimal_per_client, remainder);
+    while start < node_num {
+        let mut cur_client = minimal_per_client;
+        if i < remainder {
+            cur_client = minimal_per_client + 1;
+            i += 1;
+        }
+        result.push((start, start + cur_client));
+        start += cur_client;
+    }
+    result
+}
+
 // 预先创建znode
 fn pre_create(params: &Cli) {
-    let zk = ZooKeeper::connect(params.address.as_str(), time::Duration::from_secs(15), LoggingWatcher).unwrap();
+    let mut zk = connect_zk(params.address.as_str()).unwrap();
 
     // 如果是多客户端节点并行压测时,则只需要一个客户端进行预先创建节点
     // 先删除测试目录
     _ = zk.delete_recursive(BENCH_ROOT);
 
     // 创建测试根node
-    let result = zk.create(BENCH_ROOT, vec![0; 10], Acl::open_unsafe().clone(), CreateMode::Persistent);
+    let result = zk.create(
+        BENCH_ROOT,
+        vec![0; 10],
+        Acl::open_unsafe().clone(),
+        CreateMode::Persistent,
+    );
     match result {
         Ok(_) => {}
         Err(e) => {
@@ -94,66 +116,101 @@ fn pre_create(params: &Cli) {
     }
 
     // 创建子节点
-    for i in 0..params.node_num {
+    let mut i = 0;
+    while i < params.node_num {
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
-        let _result = zk.create(
+        let result = zk.create(
             path.as_str(),
             vec![1; params.data_size as usize],
             Acl::open_unsafe().clone(),
             CreateMode::Persistent,
-        ).unwrap();
+        );
+        match result {
+            Ok(_) => {
+                i += 1;
+            }
+            Err(e) => match e {
+                ZkError::NodeExists => {
+                    i += 1;
+                }
+                _ => {
+                    _ = zk.close();
+                    zk = connect_zk(params.address.as_str()).unwrap();
+                }
+            },
+        }
     }
     _ = zk.close();
 }
 
 // 清理压测数据
 fn post_clean(params: &Cli) {
-    let zk = ZooKeeper::connect(params.address.as_str(), time::Duration::from_secs(15), LoggingWatcher).unwrap();
+    let mut zk = connect_zk(params.address.as_str()).unwrap();
 
-    // 递归删除节点
-    _ = zk.delete_recursive(BENCH_ROOT);
+    // 顺序删除/bench_root下面的节点
+    let mut i = 0;
+    while i < params.node_num {
+        let path = format!("{}/{:0>10}", BENCH_ROOT, i);
+        if i % 1000 == 0 {
+            println!("now deleting node start with {:?}", path);
+        }
+        match zk.delete(path.as_str(), None) {
+            Ok(_) => {
+                i += 1;
+            }
+            Err(e) => match e {
+                ZkError::NoNode => {
+                    i += 1;
+                }
+                _ => {
+                    println!("failed to delete node {}, error: {}", path, e);
+                    _ = zk.close();
+                    zk = connect_zk(params.address.as_str()).unwrap();
+                }
+            },
+        }
+    }
+    println!("finished deleting znode...");
+    // 再递归删除节点
+    zk.delete_recursive(BENCH_ROOT).unwrap();
+    _ = zk.close();
 }
 
 // 压测create操作
 fn bench_create(params: &Cli) -> Option<BenchRes> {
-    let zk = connect_zk(params.address.as_str());
     // 先删除所有压测空间的znode
-    _ = zk.delete_recursive(BENCH_ROOT);
-    zk.create(BENCH_ROOT, vec![0; 10], Acl::open_unsafe().clone(), CreateMode::Persistent).unwrap();
+    post_clean(params);
+
+    // 创建根节点
+    let zk = connect_zk(params.address.as_str()).unwrap();
+    zk.ensure_path(BENCH_ROOT).unwrap();
     let _ = zk.close();
 
     let (tx, rx): (mpsc::Sender<BenchRes>, mpsc::Receiver<BenchRes>) = mpsc::channel();
 
     let mut handles = vec![];
 
-    // 每个客户端至少创建的znode数量
-    let (minimal_node_num, remainder) = (params.node_num / params.client_num, params.node_num % params.client_num);
+    let batches = divide_batch(params.node_num, params.client_num);
 
     // 当前线程压测开始时间
     let start_time = time::Instant::now();
     println!("starting {} bench...", params.op);
-    for i in 0..params.client_num {
+    let mut thread_id = 0;
+    for batch in batches {
         let thread_sender = tx.clone();
         let param = params.clone();
         let random_value: Vec<u8> = vec![0; param.data_size as usize];
-        let mut per_client_znode_num = minimal_node_num;
-        if i < remainder {
-            per_client_znode_num = minimal_node_num + 1;
-        }
+
         let handle = thread::Builder::new()
-            .name(format!("thread-{:0>4}", i))
+            .name(format!("thread-{:0>4}", thread_id))
             .spawn(move || {
-                let mut zk_cli = connect_zk(&param.address.as_str());
-
-                let cur_client_znode_root = format!("{}/{:0>4}", BENCH_ROOT, i);
-                zk_cli.create(&cur_client_znode_root, vec![0, 1], Acl::open_unsafe().clone(), CreateMode::Persistent).unwrap();
-
+                let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
                 // 当前线程的压测结果
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
 
-                let mut znode_cnt = 0;
-                while znode_cnt < per_client_znode_num {
-                    let path = format!("{}/{:0>10}", cur_client_znode_root, znode_cnt);
+                let mut znode_index = batch.0;
+                while znode_index < batch.1 {
+                    let path = format!("{}/{:0>10}", BENCH_ROOT, znode_index);
 
                     // 每条create请求的延迟
                     let start = time::Instant::now();
@@ -162,20 +219,20 @@ fn bench_create(params: &Cli) -> Option<BenchRes> {
                         Ok(_) => {
                             res.total_success += 1;
                             res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
-                            znode_cnt += 1;
+                            znode_index += 1;
                         }
                         Err(e) => {
                             match e {
                                 ZkError::NodeExists => {
                                     res.total_success += 1;
                                     res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
-                                    znode_cnt += 1;
+                                    znode_index += 1;
                                 }
                                 _ => {
                                     println!("failed to create znode {}, error: {}. Reconnecting...", path, e);
                                     res.total_failure += 1;
                                     _ = zk_cli.close(); // 先close一下,不管result
-                                    zk_cli = connect_zk(param.address.as_str());
+                                    zk_cli = connect_zk(param.address.as_str()).unwrap();
                                 }
                             }
                         }
@@ -184,7 +241,8 @@ fn bench_create(params: &Cli) -> Option<BenchRes> {
                 thread_sender.send(res).unwrap();
                 _ = zk_cli.close();
             });
-        handles.push(handle.unwrap())
+        handles.push(handle.unwrap());
+        thread_id += 1;
     }
     for handle in handles {
         _ = handle.join();
@@ -206,7 +264,6 @@ fn bench_create(params: &Cli) -> Option<BenchRes> {
     Some(total_res)
 }
 
-
 // 压测set操作
 fn bench_set(params: &Cli) -> Option<BenchRes> {
     let (tx, rx): (mpsc::Sender<BenchRes>, mpsc::Receiver<BenchRes>) = mpsc::channel();
@@ -220,7 +277,7 @@ fn bench_set(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", i))
             .spawn(move || {
-                let mut zk = connect_zk(&param.address.as_str());
+                let mut zk = connect_zk(&param.address.as_str()).unwrap();
 
                 let mut rng = rand::thread_rng();
                 // 当前线程的压测结果
@@ -246,19 +303,26 @@ fn bench_set(params: &Cli) -> Option<BenchRes> {
                     match result {
                         Ok(_) => {
                             res.total_success += 1;
-                            res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                            res.performance.insert(
+                                param.op.to_string(),
+                                time::Instant::now().duration_since(start).as_millis() as u32,
+                            );
                         }
                         Err(e) => {
-                            println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
+                            println!(
+                                "failed to set znode {}, error: {}. Reconnecting...",
+                                path, e
+                            );
                             res.total_failure += 1;
                             _ = zk.close(); // 先close一下,不管result
                             match e {
                                 ZkError::ConnectionLoss => {
-                                    zk = connect_zk(param.address.as_str()); // 重连zk
+                                    zk = connect_zk(param.address.as_str()).unwrap();
+                                    // 重连zk
                                 }
                                 _ => {
                                     // 暂时还是重连zk
-                                    zk = connect_zk(param.address.as_str());
+                                    zk = connect_zk(param.address.as_str()).unwrap();
                                 }
                             }
                         }
@@ -285,7 +349,6 @@ fn bench_set(params: &Cli) -> Option<BenchRes> {
     Some(total_res)
 }
 
-
 // 压测get操作
 fn bench_get(params: &Cli) -> Option<BenchRes> {
     let (tx, rx): (mpsc::Sender<BenchRes>, mpsc::Receiver<BenchRes>) = mpsc::channel();
@@ -298,7 +361,7 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", i))
             .spawn(move || {
-                let mut zk_cli = connect_zk(&param.address.as_str());
+                let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
 
                 let mut rng = rand::thread_rng();
                 // 当前线程的压测结果
@@ -328,19 +391,26 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
                     match result {
                         Ok(_) => {
                             res.total_success += 1;
-                            res.performance.insert(param.op.to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                            res.performance.insert(
+                                param.op.to_string(),
+                                time::Instant::now().duration_since(start).as_millis() as u32,
+                            );
                         }
                         Err(e) => {
-                            println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
+                            println!(
+                                "failed to set znode {}, error: {}. Reconnecting...",
+                                path, e
+                            );
                             res.total_failure += 1;
                             _ = zk_cli.close(); // 先close一下,不管result
                             match e {
                                 ZkError::ConnectionLoss => {
-                                    zk_cli = connect_zk(param.address.as_str()); // 重连zk
+                                    zk_cli = connect_zk(param.address.as_str()).unwrap();
+                                    // 重连zk
                                 }
                                 _ => {
                                     // 暂时还是重连zk
-                                    zk_cli = connect_zk(param.address.as_str());
+                                    zk_cli = connect_zk(param.address.as_str()).unwrap();
                                 }
                             }
                         }
@@ -369,7 +439,6 @@ fn bench_get(params: &Cli) -> Option<BenchRes> {
     Some(total_res)
 }
 
-
 // 压测getset操作
 fn bench_getset(params: &Cli) -> Option<BenchRes> {
     let (tx, rx): (mpsc::Sender<BenchRes>, mpsc::Receiver<BenchRes>) = mpsc::channel();
@@ -383,7 +452,7 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", i))
             .spawn(move || {
-                let mut zk_cli = connect_zk(&param.address.as_str());
+                let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
 
                 let mut rng = rand::thread_rng();
                 // 当前线程的压测结果
@@ -407,13 +476,20 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
                         match get_result {
                             Ok(_) => {
                                 res.total_success += 1;
-                                res.performance.insert("get".to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                                res.performance.insert(
+                                    "get".to_string(),
+                                    time::Instant::now().duration_since(start).as_millis() as u32,
+                                );
                             }
                             Err(e) => {
-                                println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
+                                println!(
+                                    "failed to set znode {}, error: {}. Reconnecting...",
+                                    path, e
+                                );
                                 res.total_failure += 1;
                                 _ = zk_cli.close(); // 先close一下,不管result
-                                zk_cli = connect_zk(param.address.as_str()); // 重连zk
+                                zk_cli = connect_zk(param.address.as_str()).unwrap();
+                                // 重连zk
                             }
                         }
                     } else {
@@ -425,13 +501,20 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
                         match set_result {
                             Ok(_) => {
                                 res.total_success += 1;
-                                res.performance.insert("set".to_string(), time::Instant::now().duration_since(start).as_millis() as u32);
+                                res.performance.insert(
+                                    "set".to_string(),
+                                    time::Instant::now().duration_since(start).as_millis() as u32,
+                                );
                             }
                             Err(e) => {
-                                println!("failed to set znode {}, error: {}. Reconnecting...", path, e);
+                                println!(
+                                    "failed to set znode {}, error: {}. Reconnecting...",
+                                    path, e
+                                );
                                 res.total_failure += 1;
                                 _ = zk_cli.close(); // 先close一下,不管result
-                                zk_cli = connect_zk(param.address.as_str()); // 重连zk
+                                zk_cli = connect_zk(param.address.as_str()).unwrap();
+                                // 重连zk
                             }
                         }
                     }
@@ -459,15 +542,20 @@ fn bench_getset(params: &Cli) -> Option<BenchRes> {
     Some(total_res)
 }
 
-// 重新连接zk
-fn connect_zk(addr: &str) -> ZooKeeper {
+/// 连接zk.最多连续重试10次,连续10次都连接不上的话认为zk有问题
+fn connect_zk(addr: &str) -> Result<ZooKeeper, ZkError> {
+    let mut retry = 0;
     loop {
-        match ZooKeeper::connect(addr, time::Duration::from_secs(10), LoggingWatcher) {
+        match ZooKeeper::connect(addr, time::Duration::from_secs(5), LoggingWatcher) {
             Ok(zk) => {
-                return zk;
+                return Ok(zk);
             }
             Err(e) => {
                 println!("Error connecting to ZooKeeper: {}", e);
+                retry += 1;
+                if retry >= 10 {
+                    return Err(e);
+                }
                 thread::sleep(time::Duration::from_millis(5));
             }
         }
@@ -477,7 +565,10 @@ fn connect_zk(addr: &str) -> ZooKeeper {
 fn main() {
     // 解析命令行参数
     let params = Cli::parse();
-    println!("benchmark parameters: {}", serde_json::to_string(&params.clone()).unwrap());
+    println!(
+        "benchmark parameters: {}",
+        serde_json::to_string(&params.clone()).unwrap()
+    );
 
     match params.op.as_str() {
         "pre-create" => {
