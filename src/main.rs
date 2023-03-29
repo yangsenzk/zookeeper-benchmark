@@ -178,11 +178,12 @@ fn post_clean(params: &Cli) {
 
 // 压测create操作
 fn bench_create(params: &Cli) -> Option<BenchRes> {
-    // 先删除所有压测空间的znode
-    post_clean(params);
+    // // 先删除所有压测空间的znode
+    // post_clean(params);
 
     // 创建根节点
     let zk = connect_zk(params.address.as_str()).unwrap();
+    zk.delete_recursive(BENCH_ROOT).unwrap();
     zk.ensure_path(BENCH_ROOT).unwrap();
     let _ = zk.close();
 
