@@ -190,7 +190,7 @@ fn bench_create(params: &Cli) -> Option<BenchRes> {
 
     // 创建根节点
     let zk = connect_zk(params.address.as_str()).unwrap();
-    zk.delete_recursive(BENCH_ROOT).unwrap();
+    _ = zk.delete_recursive(BENCH_ROOT);
     zk.ensure_path(BENCH_ROOT).unwrap();
     let _ = zk.close();
 
