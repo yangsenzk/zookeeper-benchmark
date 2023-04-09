@@ -576,10 +576,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "zookeeper"
-version = "0.7.0"
+name = "zookeeper-benchmark"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "rand",
+ "serde",
+ "serde_json",
+ "zookeeper-zk",
+]
+
+[[package]]
+name = "zookeeper-zk"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ad5aef26217dec3996c044b71493aed1b94f42efad1139b63c3f309ffa75605"
+checksum = "813f9d1e06ad3ffbb9016fb391aada205b2a0fe8aab93f10ed0efb6c335b5859"
 dependencies = [
  "byteorder",
  "bytes",
@@ -589,17 +600,6 @@ dependencies = [
  "mio-extras",
  "snowflake",
  "zookeeper_derive",
-]
-
-[[package]]
-name = "zookeeper-benchmark"
-version = "0.1.0"
-dependencies = [
- "clap",
- "rand",
- "serde",
- "serde_json",
- "zookeeper",
 ]
 
 [[package]]
