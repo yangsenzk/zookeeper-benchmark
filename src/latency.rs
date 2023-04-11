@@ -33,7 +33,7 @@ impl OpResult {
 impl RequestLatency {
     pub fn new() -> RequestLatency {
         RequestLatency {
-            op_latency: HashMap::new()
+            op_latency: HashMap::new(),
         }
     }
 
@@ -97,7 +97,8 @@ impl RequestLatency {
     pub fn add(&mut self, another: &RequestLatency) {
         for (op, another_result) in another.op_latency.iter() {
             if !self.op_latency.contains_key(op) {
-                self.op_latency.insert(op.to_string(), another_result.clone());
+                self.op_latency
+                    .insert(op.to_string(), another_result.clone());
                 continue;
             }
             let this_result = self.op_latency.get_mut(op.as_str()).unwrap();

@@ -1,15 +1,14 @@
-use crate::cmd::Cli;
-use crate::latency::RequestLatency;
-use crate::model::BenchRes;
-
-use rand::Rng;
 use std::sync::mpsc;
 use std::thread;
 use std::time;
 
+use rand::Rng;
 use zookeeper_zk::{Acl, CreateMode, WatchedEvent, Watcher, ZkError, ZooKeeper, ZooKeeperExt};
 
+use crate::cmd::Cli;
 use crate::consts::BENCH_ROOT;
+use crate::latency::RequestLatency;
+use crate::model::BenchRes;
 
 struct LoggingWatcher;
 
@@ -506,6 +505,7 @@ pub fn bench_getset(params: &Cli) -> Option<BenchRes> {
 /// 连接zk.最多连续重试10次,连续10次都连接不上的话认为zk有问题
 pub fn connect_zk(addr: &str) -> Result<ZooKeeper, ZkError> {
     let mut retry = 0;
+    let mut rng = rand::thread_rng();
     loop {
         match ZooKeeper::connect(addr, time::Duration::from_secs(5), LoggingWatcher) {
             Ok(zk) => {
@@ -517,7 +517,7 @@ pub fn connect_zk(addr: &str) -> Result<ZooKeeper, ZkError> {
                 if retry >= 10 {
                     return Err(e);
                 }
-                thread::sleep(time::Duration::from_millis(5));
+                thread::sleep(time::Duration::from_millis(rng.gen_range(10..200)));
             }
         }
     }
