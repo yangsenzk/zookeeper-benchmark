@@ -45,10 +45,22 @@ pub fn pre_create(params: &Cli) {
     // 创建测试根node
     zk.ensure_path(BENCH_ROOT).unwrap();
 
+    // 限制qps
+    let mut limiter: Option<ratelimit::Ratelimiter> = None;
+    if params.qps_per_conn > 0 {
+        limiter = Some(ratelimit::Ratelimiter::new(100, 1, params.qps_per_conn as u64));
+    }
+
     // 创建子节点
     let mut i = 0;
     while i < params.node_num {
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
+        match limiter {
+            Some(ref l) => {
+                l.wait();
+            }
+            None => {}
+        }
         let result = zk.create(
             path.as_str(),
             vec![1; params.data_size as usize],
