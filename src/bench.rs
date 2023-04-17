@@ -3,6 +3,7 @@ use std::thread;
 use std::time;
 
 use rand::Rng;
+use ratelimit;
 use zookeeper_zk::{Acl, CreateMode, WatchedEvent, Watcher, ZkError, ZooKeeper, ZooKeeperExt};
 
 use crate::cmd::Cli;
@@ -76,9 +77,13 @@ pub fn pre_create(params: &Cli) {
 pub fn post_clean(params: &Cli) {
     let mut zk = connect_zk(params.address.as_str()).unwrap();
 
+    let mut rng = rand::thread_rng();
+    // 限速
+    let limiter = ratelimit::Ratelimiter::new(50, 1, 200);
     // 顺序删除/bench_root下面的节点
     let mut i = 0;
     while i < params.node_num {
+        limiter.wait(); // 获取token
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
         if i % 1000 == 0 {
             println!("now deleting node start with {:?}", path);
