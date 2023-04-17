@@ -21,4 +21,6 @@ pub struct Cli {
     pub rw_ratio: f32,
     #[arg(long, default_value = "")]
     pub op: String,
+    #[arg(long, default_value_t = 0)]
+    pub qps_per_conn: i32,
 }
