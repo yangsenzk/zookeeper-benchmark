@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.1.9", features = ["derive"] }
-zookeeper-zk = { version = "0.7", path = "../rust-zookeeper" }
+zookeeper-zk = { version = "0.7.2" }
 rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
