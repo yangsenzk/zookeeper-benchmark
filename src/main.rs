@@ -3,9 +3,9 @@ use serde_json;
 
 mod bench;
 mod cmd;
+mod consts;
 mod latency;
 mod model;
-pub mod consts;
 
 fn main() {
     // 解析命令行参数

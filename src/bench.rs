@@ -1,15 +1,15 @@
-use crate::cmd::Cli;
-use crate::latency::RequestLatency;
-use crate::model::BenchRes;
-
-use rand::Rng;
 use std::sync::mpsc;
 use std::thread;
 use std::time;
 
+use rand::Rng;
+use ratelimit;
 use zookeeper_zk::{Acl, CreateMode, WatchedEvent, Watcher, ZkError, ZooKeeper, ZooKeeperExt};
 
+use crate::cmd::Cli;
 use crate::consts::BENCH_ROOT;
+use crate::latency::RequestLatency;
+use crate::model::BenchRes;
 
 struct LoggingWatcher;
 
@@ -45,10 +45,22 @@ pub fn pre_create(params: &Cli) {
     // 创建测试根node
     zk.ensure_path(BENCH_ROOT).unwrap();
 
+    // 限制qps
+    let mut limiter: Option<ratelimit::Ratelimiter> = None;
+    if params.qps_per_conn > 0 {
+        limiter = Some(ratelimit::Ratelimiter::new(100, 1, params.qps_per_conn as u64));
+    }
+
     // 创建子节点
     let mut i = 0;
     while i < params.node_num {
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
+        match limiter {
+            Some(ref l) => {
+                l.wait();
+            }
+            None => {}
+        }
         let result = zk.create(
             path.as_str(),
             vec![1; params.data_size as usize],
@@ -77,9 +89,24 @@ pub fn pre_create(params: &Cli) {
 pub fn post_clean(params: &Cli) {
     let mut zk = connect_zk(params.address.as_str()).unwrap();
 
+    // 限速
+    let mut limiter: Option<ratelimit::Ratelimiter> = None;
+    if params.qps_per_conn > 0 {
+        limiter = Some(ratelimit::Ratelimiter::new(
+            50,
+            1,
+            params.qps_per_conn as u64,
+        ));
+    }
     // 顺序删除/bench_root下面的节点
     let mut i = 0;
     while i < params.node_num {
+        match limiter {
+            Some(ref l) => {
+                l.wait();
+            }
+            None => {}
+        }
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
         if i % 1000 == 0 {
             println!("now deleting node start with {:?}", path);
@@ -506,6 +533,7 @@ pub fn bench_getset(params: &Cli) -> Option<BenchRes> {
 /// 连接zk.最多连续重试10次,连续10次都连接不上的话认为zk有问题
 pub fn connect_zk(addr: &str) -> Result<ZooKeeper, ZkError> {
     let mut retry = 0;
+    let mut rng = rand::thread_rng();
     loop {
         match ZooKeeper::connect(addr, time::Duration::from_secs(5), LoggingWatcher) {
             Ok(zk) => {
@@ -517,7 +545,7 @@ pub fn connect_zk(addr: &str) -> Result<ZooKeeper, ZkError> {
                 if retry >= 10 {
                     return Err(e);
                 }
-                thread::sleep(time::Duration::from_millis(5));
+                thread::sleep(time::Duration::from_millis(rng.gen_range(10..200)));
             }
         }
     }
