@@ -1,5 +1,4 @@
 use clap::Parser;
-use serde_json;
 
 mod bench;
 mod cmd;
@@ -12,7 +11,7 @@ fn main() {
     let params = cmd::Cli::parse();
     println!(
         "benchmark parameters: {}",
-        serde_json::to_string(&params.clone()).unwrap()
+        serde_json::to_string(&params).unwrap()
     );
 
     match params.op.as_str() {

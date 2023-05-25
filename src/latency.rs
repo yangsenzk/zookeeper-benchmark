@@ -30,6 +30,12 @@ impl OpResult {
     }
 }
 
+impl Default for RequestLatency{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RequestLatency {
     pub fn new() -> RequestLatency {
         RequestLatency {

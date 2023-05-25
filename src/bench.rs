@@ -3,7 +3,6 @@ use std::thread;
 use std::time;
 
 use rand::Rng;
-use ratelimit;
 use zookeeper_zk::{Acl, CreateMode, WatchedEvent, Watcher, ZkError, ZooKeeper, ZooKeeperExt};
 
 use crate::cmd::Cli;
@@ -48,18 +47,19 @@ pub fn pre_create(params: &Cli) {
     // 限制qps
     let mut limiter: Option<ratelimit::Ratelimiter> = None;
     if params.qps_per_conn > 0 {
-        limiter = Some(ratelimit::Ratelimiter::new(100, 1, params.qps_per_conn as u64));
+        limiter = Some(ratelimit::Ratelimiter::new(
+            100,
+            1,
+            params.qps_per_conn as u64,
+        ));
     }
 
     // 创建子节点
     let mut i = 0;
     while i < params.node_num {
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
-        match limiter {
-            Some(ref l) => {
-                l.wait();
-            }
-            None => {}
+        if let Some(ref l) = limiter {
+            l.wait();
         }
         let result = zk.create(
             path.as_str(),
@@ -101,11 +101,8 @@ pub fn post_clean(params: &Cli) {
     // 顺序删除/bench_root下面的节点
     let mut i = 0;
     while i < params.node_num {
-        match limiter {
-            Some(ref l) => {
-                l.wait();
-            }
-            None => {}
+        if let Some(ref l) = limiter {
+            l.wait();
         }
         let path = format!("{}/{:0>10}", BENCH_ROOT, i);
         if i % 1000 == 0 {
@@ -163,8 +160,7 @@ pub fn bench_create(params: &Cli) -> Option<BenchRes> {
     // 当前线程压测开始时间
     let start_time = time::Instant::now();
     println!("starting {} bench...", params.op);
-    let mut thread_id = 0;
-    for batch in batches {
+    for (thread_id, batch) in batches.into_iter().enumerate() {
         let thread_sender = tx.clone();
         let param = params.clone();
         let random_value: Vec<u8> = vec![0; param.data_size as usize];
@@ -172,12 +168,23 @@ pub fn bench_create(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", thread_id))
             .spawn(move || {
-                let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
+                let mut zk_cli = connect_zk(param.address.as_str()).unwrap();
                 // 当前线程的压测结果
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
-
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                }
                 let mut znode_index = batch.0;
                 while znode_index < batch.1 {
+                    if let Some(ref l) = limiter {
+                        l.wait();
+                    }
                     let path = format!("{}/{:0>10}", BENCH_ROOT, znode_index);
 
                     // 每条create请求的延迟
@@ -225,7 +232,6 @@ pub fn bench_create(params: &Cli) -> Option<BenchRes> {
                 _ = zk_cli.close();
             });
         handles.push(handle.unwrap());
-        thread_id += 1;
     }
     for handle in handles {
         _ = handle.join();
@@ -263,14 +269,26 @@ pub fn bench_set(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", i))
             .spawn(move || {
-                let mut zk = connect_zk(&param.address.as_str()).unwrap();
+                let mut zk = connect_zk(param.address.as_str()).unwrap();
 
                 let mut rng = rand::thread_rng();
                 // 当前线程的压测结果
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
                 // 当前线程压测开始时间
                 let start_time = time::Instant::now();
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                };
                 loop {
+                    if let Some(ref l) = limiter {
+                        l.wait();
+                    }
                     if time::Instant::now().duration_since(start_time).as_secs() > param.duration {
                         // 计算单个连接的QPS
                         thread_sender.send(res).unwrap();
@@ -330,7 +348,7 @@ pub fn bench_set(params: &Cli) -> Option<BenchRes> {
         total_res.total_failure += thread_res.total_failure;
         total_res.performance.add(&thread_res.performance);
     }
-    total_res.total_qps = total_res.total_success as f32 / total_res.duration as f32;
+    total_res.total_qps = total_res.total_success as f32 / total_res.duration;
     total_res.performance.cal_qps(params.duration * 1000);
     Some(total_res)
 }
@@ -347,7 +365,7 @@ pub fn bench_get(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", i))
             .spawn(move || {
-                let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
+                let mut zk_cli = connect_zk(param.address.as_str()).unwrap();
 
                 let mut rng = rand::thread_rng();
                 // 当前线程的压测结果
@@ -361,7 +379,20 @@ pub fn bench_get(params: &Cli) -> Option<BenchRes> {
                 };
                 // 当前线程压测开始时间
                 let start_time = time::Instant::now();
+
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                };
                 loop {
+                    if let Some(ref l) = limiter {
+                        l.wait();
+                    }
                     if time::Instant::now().duration_since(start_time).as_secs() > param.duration {
                         // 计算单个连接的QPS
                         thread_sender.send(res).unwrap();
@@ -438,7 +469,7 @@ pub fn bench_getset(params: &Cli) -> Option<BenchRes> {
         let handle = thread::Builder::new()
             .name(format!("thread-{:0>4}", i))
             .spawn(move || {
-                let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
+                let mut zk_cli = connect_zk(param.address.as_str()).unwrap();
 
                 let mut rng = rand::thread_rng();
 
@@ -446,7 +477,20 @@ pub fn bench_getset(params: &Cli) -> Option<BenchRes> {
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
                 // 当前线程压测开始时间
                 let start_time = time::Instant::now();
+
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                };
                 loop {
+                    if let Some(ref l) = limiter {
+                        l.wait();
+                    }
                     if time::Instant::now().duration_since(start_time).as_secs() > param.duration {
                         // 计算单个连接的QPS
                         thread_sender.send(res).unwrap();

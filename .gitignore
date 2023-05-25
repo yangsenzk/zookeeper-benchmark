@@ -3,4 +3,5 @@ target
 .vscode
 test_*
 output
+Cargo.lock
 zookeeper-benchmark
