@@ -1,5 +1,4 @@
 use clap::Parser;
-use serde;
 
 #[derive(Parser, serde::Serialize, Clone)]
 #[command(name = "zookeeper-benchmark")]
