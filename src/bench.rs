@@ -48,7 +48,11 @@ pub fn pre_create(params: &Cli) {
     // 限制qps
     let mut limiter: Option<ratelimit::Ratelimiter> = None;
     if params.qps_per_conn > 0 {
-        limiter = Some(ratelimit::Ratelimiter::new(100, 1, params.qps_per_conn as u64));
+        limiter = Some(ratelimit::Ratelimiter::new(
+            100,
+            1,
+            params.qps_per_conn as u64,
+        ));
     }
 
     // 创建子节点
@@ -175,9 +179,23 @@ pub fn bench_create(params: &Cli) -> Option<BenchRes> {
                 let mut zk_cli = connect_zk(&param.address.as_str()).unwrap();
                 // 当前线程的压测结果
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
-
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                }
                 let mut znode_index = batch.0;
                 while znode_index < batch.1 {
+                    match limiter {
+                        Some(ref l) => {
+                            l.wait();
+                        }
+                        None => {}
+                    }
                     let path = format!("{}/{:0>10}", BENCH_ROOT, znode_index);
 
                     // 每条create请求的延迟
@@ -270,7 +288,22 @@ pub fn bench_set(params: &Cli) -> Option<BenchRes> {
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
                 // 当前线程压测开始时间
                 let start_time = time::Instant::now();
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                };
                 loop {
+                    match limiter {
+                        Some(ref l) => {
+                            l.wait();
+                        }
+                        None => {}
+                    }
                     if time::Instant::now().duration_since(start_time).as_secs() > param.duration {
                         // 计算单个连接的QPS
                         thread_sender.send(res).unwrap();
@@ -361,7 +394,23 @@ pub fn bench_get(params: &Cli) -> Option<BenchRes> {
                 };
                 // 当前线程压测开始时间
                 let start_time = time::Instant::now();
+
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                };
                 loop {
+                    match limiter {
+                        Some(ref l) => {
+                            l.wait();
+                        }
+                        None => {}
+                    }
                     if time::Instant::now().duration_since(start_time).as_secs() > param.duration {
                         // 计算单个连接的QPS
                         thread_sender.send(res).unwrap();
@@ -446,7 +495,23 @@ pub fn bench_getset(params: &Cli) -> Option<BenchRes> {
                 let mut res = BenchRes::new(param.client_num, param.duration as i32);
                 // 当前线程压测开始时间
                 let start_time = time::Instant::now();
+
+                // qps limiter
+                let mut limiter: Option<ratelimit::Ratelimiter> = None;
+                if param.qps_per_conn > 0 {
+                    limiter = Some(ratelimit::Ratelimiter::new(
+                        50,
+                        1,
+                        param.qps_per_conn as u64,
+                    ));
+                };
                 loop {
+                    match limiter {
+                        Some(ref l) => {
+                            l.wait();
+                        }
+                        None => {}
+                    }
                     if time::Instant::now().duration_since(start_time).as_secs() > param.duration {
                         // 计算单个连接的QPS
                         thread_sender.send(res).unwrap();
